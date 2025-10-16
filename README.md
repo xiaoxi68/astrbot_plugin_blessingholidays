@@ -33,6 +33,7 @@
 -   `enabled`: 是否启用插件 (布尔型, 默认: `true`)。
 -   `llm_provider_id`: 选择用于生成祝福的 LLM 提供商（从 AstrBot WebUI 已配置提供商中选择）。
 -   `holidays_file`: 节假日数据缓存文件名 (字符串, 默认: `holidays.json`)。
+> 首次安装默认快速模式：预计算未来 7 天，整年在后台自动补齐（无需配置）。
 -   `test_targets`: 测试命令的目标配置 (对象，可选)。
     -   `group_ids`: 群组 ID 列表 (列表)。
     -   `user_ids`: 用户 ID 列表 (列表)。

@@ -271,9 +271,49 @@ class BlessingHolidaysPlugin(Star):
                 self.logger.info("插件已在配置中禁用，跳过初始化。")
                 return
             
-            # 加载或获取当前年份的节假日数据
-            self.holidays = await get_current_year_holidays(self.json_file)
-            print_holidays_summary(self.holidays, datetime.now().year)
+            # 加载或获取当前年份的节假日数据（默认快速模式：首次仅预计算 7 天，后台补齐整年）
+            current_year = datetime.now().year
+            saved_year, saved = load_holidays_from_json(self.json_file)
+            if saved_year == current_year and saved:
+                self.holidays = saved
+                print_holidays_summary(self.holidays, current_year)
+            else:
+                self.logger.info("首次启动快速模式：预计算未来 7 天，整年在后台补齐…")
+                today = datetime.now().date()
+                quick_list = []
+                # 预加载 [今天, 今天+6]
+                for d in [today + timedelta(days=i) for i in range(7)]:
+                    try:
+                        on_hol, hol_name = ch_calendar.get_holiday_detail(d)
+                        is_hol = is_holiday(d)
+                        is_work = is_workday(d)
+                        is_lieu = ch_calendar.is_in_lieu(d)
+                        name_cn = ''
+                        if on_hol and hol_name:
+                            name_cn = await translate_holiday_name(hol_name)
+                        # 计算首日/末日（基于前后一天）
+                        prev_on, prev_name = ch_calendar.get_holiday_detail(d - timedelta(days=1))
+                        next_on, next_name = ch_calendar.get_holiday_detail(d + timedelta(days=1))
+                        prev_cn = await translate_holiday_name(prev_name) if prev_on and prev_name else ''
+                        next_cn = await translate_holiday_name(next_name) if next_on and next_name else ''
+                        quick_list.append({
+                            'date': d.isoformat(),
+                            'holiday_name': name_cn if name_cn else '',
+                            'is_holiday': is_hol,
+                            'is_workday': is_work,
+                            'is_in_lieu': is_lieu,
+                            'is_first_day': bool(is_hol and (not prev_on or (prev_cn != name_cn))),
+                            'is_last_day': bool(is_hol and (not next_on or (next_cn != name_cn))),
+                        })
+                    except Exception as e:
+                        self.logger.warning(f"快速模式计算 {d} 失败: {e}")
+                        quick_list.append({
+                            'date': d.isoformat(), 'holiday_name': '', 'is_holiday': False,
+                            'is_workday': True, 'is_in_lieu': False, 'is_first_day': False, 'is_last_day': False
+                        })
+                self.holidays = quick_list
+                # 后台预热整年
+                asyncio.create_task(self._warm_holidays_full_year())
             
             # 启动每日祝福检查的后台循环任务
             asyncio.create_task(self.daily_blessing_checker())
@@ -285,6 +325,17 @@ class BlessingHolidaysPlugin(Star):
             self.logger.info("节假日祝福插件初始化完成。")
         except Exception as e:
             self.logger.error(f"插件初始化失败: {e}")
+
+    async def _warm_holidays_full_year(self):
+        """后台预热整年节假日数据并写入缓存。"""
+        try:
+            year = datetime.now().year
+            full = await get_year_holidays(year)
+            save_holidays_to_json(year, full, self.json_file)
+            self.holidays = full
+            self.logger.info(f"整年节假日预热完成，共 {len(full)} 条。")
+        except Exception as e:
+            self.logger.error(f"后台预热整年节假日失败: {e}")
 
     @filter.command_group("blessings")
     def blessings(self):
