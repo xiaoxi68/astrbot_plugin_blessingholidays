@@ -125,12 +125,8 @@ async def get_year_holidays(year: int) -> list:
                 if not holidays or not holidays[-1]['is_holiday'] or holidays[-1]['holiday_name'] != translated_name:
                     holiday_info['is_first_day'] = True
                 
-                # 优化日志输出，仅在假期变化时打印
-                if translated_name != prev_holiday_name:
-                    logger.info(f"{current_date} 是节假日: {translated_name}")
-                    if is_lieu:
-                        logger.info(f"  -> {current_date} 是调休日")
-                    prev_holiday_name = translated_name
+                # 不在逐日遍历中打印详细日志，避免重复与噪声
+                prev_holiday_name = translated_name
             
             holidays.append(holiday_info)
             
@@ -250,6 +246,9 @@ class BlessingHolidaysPlugin(Star):
 
         # 图片/文件传输相关配置已移除（纯文本模式）
         self.test_targets = config.get("test_targets", {})
+        # 发送节流参数（内置常量，可按需调整源码）
+        self.send_interval_friend_seconds = 5
+        self.send_interval_group_seconds = 3
         
         self.holidays = []
         self.logger = logger
@@ -281,29 +280,35 @@ class BlessingHolidaysPlugin(Star):
                 self.logger.info("首次启动快速模式：预计算未来 7 天，整年在后台补齐…")
                 today = datetime.now().date()
                 quick_list = []
-                # 预加载 [今天, 今天+6]
+                # 预加载 [今天, 今天+6]，简化首日/末日计算逻辑：
+                # - 仅对当天进行翻译；
+                # - 首日/末日判断用英文名比较，避免多次翻译；
+                # - 对非当天记录，首/末日标记暂缺省为 False，待后台预热覆盖。
                 for d in [today + timedelta(days=i) for i in range(7)]:
                     try:
                         on_hol, hol_name = ch_calendar.get_holiday_detail(d)
                         is_hol = is_holiday(d)
                         is_work = is_workday(d)
                         is_lieu = ch_calendar.is_in_lieu(d)
-                        name_cn = ''
-                        if on_hol and hol_name:
-                            name_cn = await translate_holiday_name(hol_name)
-                        # 计算首日/末日（基于前后一天）
+                        # 当天翻译显示名，其他天可由后台预热覆盖
+                        name_cn = await translate_holiday_name(hol_name) if (d == today and on_hol and hol_name) else ''
+                        # 简化的首/末日判断：仅用英文名比对，避免多次翻译
                         prev_on, prev_name = ch_calendar.get_holiday_detail(d - timedelta(days=1))
                         next_on, next_name = ch_calendar.get_holiday_detail(d + timedelta(days=1))
-                        prev_cn = await translate_holiday_name(prev_name) if prev_on and prev_name else ''
-                        next_cn = await translate_holiday_name(next_name) if next_on and next_name else ''
+                        is_first = bool(is_hol and (not prev_on or (prev_name != hol_name)))
+                        is_last = bool(is_hol and (not next_on or (next_name != hol_name)))
+                        # 仅当天保留首/末日信息，其余天先置 False，待后台预热覆盖
+                        if d != today:
+                            is_first = False
+                            is_last = False
                         quick_list.append({
                             'date': d.isoformat(),
                             'holiday_name': name_cn if name_cn else '',
                             'is_holiday': is_hol,
                             'is_workday': is_work,
                             'is_in_lieu': is_lieu,
-                            'is_first_day': bool(is_hol and (not prev_on or (prev_cn != name_cn))),
-                            'is_last_day': bool(is_hol and (not next_on or (next_cn != name_cn))),
+                            'is_first_day': is_first,
+                            'is_last_day': is_last,
                         })
                     except Exception as e:
                         self.logger.warning(f"快速模式计算 {d} 失败: {e}")
@@ -333,7 +338,9 @@ class BlessingHolidaysPlugin(Star):
             full = await get_year_holidays(year)
             save_holidays_to_json(year, full, self.json_file)
             self.holidays = full
-            self.logger.info(f"整年节假日预热完成，共 {len(full)} 条。")
+            # 统计更准确的节假日天数
+            holiday_days = sum(1 for h in full if h.get('is_holiday'))
+            self.logger.info(f"整年节假日预热完成：节假日天数 {holiday_days}，总记录 {len(full)}。")
         except Exception as e:
             self.logger.error(f"后台预热整年节假日失败: {e}")
 
@@ -521,7 +528,13 @@ class BlessingHolidaysPlugin(Star):
                     # --- 平台无关的广播逻辑 ---
                     sent_count = 0
                     all_platforms = self.context.platform_manager.get_insts()
-                    for platform in all_platforms:
+                # 跨平台去重集合（用户/群组）
+                sent_user_ids: set[str] = set()
+                sent_group_ids: set[str] = set()
+                # 跨平台去重集合（用户/群组）
+                sent_user_ids: set[str] = set()
+                sent_group_ids: set[str] = set()
+                for platform in all_platforms:
                         # 仅针对支持 get_client 和 call_action 的平台 (如 aiocqhttp)
                         if not hasattr(platform, "get_client") or not platform.get_client() or not hasattr(platform.get_client().api, "call_action"):
                             continue
@@ -533,29 +546,39 @@ class BlessingHolidaysPlugin(Star):
                             friend_list = await client.api.call_action("get_friend_list")
                             group_list = await client.api.call_action("get_group_list")
 
-                            # 发送到好友
+                            # 发送到好友（跨平台去重）
                             for friend in friend_list:
                                 user_id = friend.get('user_id')
-                                if not user_id: continue
+                                if not user_id:
+                                    continue
+                                uid = str(user_id)
+                                if uid in sent_user_ids:
+                                    continue
                                 session_str = f"{platform.meta.name}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
                                 try:
                                     await self.context.send_message(session_str, chain)
                                     sent_count += 1
                                     self.logger.info(f"祝福消息已发送到用户 {user_id}")
-                                    await asyncio.sleep(5)
+                                    sent_user_ids.add(uid)
+                                    await asyncio.sleep(self.send_interval_friend_seconds)
                                 except Exception as e:
                                     self.logger.error(f"发送祝福到用户 {user_id} 失败: {e}")
                             
-                            # 发送到群组
+                            # 发送到群组（跨平台去重）
                             for group in group_list:
                                 group_id = group.get('group_id')
-                                if not group_id: continue
+                                if not group_id:
+                                    continue
+                                gid = str(group_id)
+                                if gid in sent_group_ids:
+                                    continue
                                 session_str = f"{platform.meta.name}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
                                 try:
                                     await self.context.send_message(session_str, chain)
                                     sent_count += 1
                                     self.logger.info(f"祝福消息已发送到群组 {group_id}")
-                                    await asyncio.sleep(5)
+                                    sent_group_ids.add(gid)
+                                    await asyncio.sleep(self.send_interval_group_seconds)
                                 except Exception as e:
                                     self.logger.error(f"发送祝福到群组 {group_id} 失败: {e}")
                         except Exception as e:
@@ -748,29 +771,39 @@ class BlessingHolidaysPlugin(Star):
                             friend_list = await client.api.call_action("get_friend_list")
                             group_list = await client.api.call_action("get_group_list")
 
-                            # 发送到好友
+                            # 发送到好友（跨平台去重）
                             for friend in friend_list:
                                 user_id = friend.get('user_id')
-                                if not user_id: continue
+                                if not user_id:
+                                    continue
+                                uid = str(user_id)
+                                if uid in sent_user_ids:
+                                    continue
                                 session_str = f"{platform.meta.name}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
                                 try:
                                     await self.context.send_message(session_str, chain)
                                     sent_count += 1
                                     self.logger.info(f"假期结束提醒已发送到用户 {user_id}")
-                                    await asyncio.sleep(3)
+                                    sent_user_ids.add(uid)
+                                    await asyncio.sleep(self.send_interval_friend_seconds)
                                 except Exception as e:
                                     self.logger.error(f"发送假期结束提醒到用户 {user_id} 失败: {e}")
                             
-                            # 发送到群组
+                            # 发送到群组（跨平台去重）
                             for group in group_list:
                                 group_id = group.get('group_id')
-                                if not group_id: continue
+                                if not group_id:
+                                    continue
+                                gid = str(group_id)
+                                if gid in sent_group_ids:
+                                    continue
                                 session_str = f"{platform.meta.name}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
                                 try:
                                     await self.context.send_message(session_str, chain)
                                     sent_count += 1
                                     self.logger.info(f"假期结束提醒已发送到群组 {group_id}")
-                                    await asyncio.sleep(3)
+                                    sent_group_ids.add(gid)
+                                    await asyncio.sleep(self.send_interval_group_seconds)
                                 except Exception as e:
                                     self.logger.error(f"发送假期结束提醒到群组 {group_id} 失败: {e}")
                         except Exception as e:
