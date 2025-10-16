@@ -1,4 +1,4 @@
-name: blessingholidays # 这是你的插件的唯一识别名。
+name: astrbot_plugin_blessingholidays # 这是你的插件的唯一识别名。
 desc: 在节假日自动送上祝福(修改自cheng-maomao的SendBlessings插件) # 插件简短描述
 version: 1.0 # 插件版本号。格式：v1.1.1 或者 v1.1
 author: 薄暝 # 作者
