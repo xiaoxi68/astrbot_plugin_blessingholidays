@@ -47,5 +47,16 @@
                 "default": "22:00"
             }
         }
+    },
+    "start_of_holiday_blessing": {
+        "description": "假期首日祝福发送设置",
+        "type": "object",
+        "items": {
+            "send_time": {
+                "description": "每日发送时间 (HH:MM)",
+                "type": "string",
+                "default": "00:05"
+            }
+        }
     }
 }

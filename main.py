@@ -238,7 +238,8 @@ class BlessingHolidaysPlugin(Star):
         
         # 手动构建插件数据目录以实现数据隔离
         base_data_dir = Path(self.context.get_config().get('data_dir', 'data'))
-        plugin_name = self.context.get_registered_star("BlessingHolidays").name
+        # 使用固定的插件标识避免初始化阶段上下文尚未注册导致的 None
+        plugin_name = "blessingholidays"
         self.plugin_data_dir = base_data_dir / "plugin_data" / plugin_name
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
         
@@ -255,6 +256,8 @@ class BlessingHolidaysPlugin(Star):
 
         # 加载假期结束提醒配置
         self.end_of_holiday_config = config.get("end_of_holiday_blessing", {})
+        # 加载假期首日祝福配置（仅时间）
+        self.start_of_holiday_config = config.get("start_of_holiday_blessing", {})
         
         # 在后台启动异步初始化任务
         asyncio.create_task(self.initialize())
@@ -434,13 +437,17 @@ class BlessingHolidaysPlugin(Star):
         self.logger.info("每日祝福检查任务已启动。")
         while True:
             try:
-                # --- 精确计算到第二天凌晨的时间 ---
+                # --- 根据配置计算下次运行时间 ---
                 now = datetime.now()
-                # 设置目标时间为第二天的 00:05
-                tomorrow = now.date() + timedelta(days=1)
-                target_time = datetime.combine(tomorrow, datetime.min.time()).replace(hour=0, minute=5)
+                send_time_str = self.start_of_holiday_config.get("send_time", "00:05")
+                try:
+                    hour, minute = map(int, send_time_str.split(':'))
+                except Exception:
+                    hour, minute = 0, 5
+                target_time = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+                if now >= target_time:
+                    target_time += timedelta(days=1)
                 wait_seconds = (target_time - now).total_seconds()
-                
                 self.logger.info(f"下一次每日祝福检查将在 {target_time.strftime('%Y-%m-%d %H:%M:%S')} 进行，等待 {wait_seconds:.0f} 秒。")
                 await asyncio.sleep(wait_seconds)
                 # --- --------------------------- ---
