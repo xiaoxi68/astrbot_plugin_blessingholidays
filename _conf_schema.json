@@ -1,0 +1,89 @@
+{
+    "enabled": {
+        "description": "是否启用插件",
+        "type": "bool",
+        "default": true
+    },
+    "openrouter_api_keys": {
+        "description": "OpenRouter API 密钥列表",
+        "type": "list",
+        "hint": "请前往 https://openrouter.ai/ 注册账号，并获取多个 OpenRouter API Key。支持多个密钥自动轮换，当一个密钥额度耗尽时会自动切换到下一个",
+        "default": [
+            "sk-or-v1-abc-123"
+        ],
+        "obvious_hint": true
+    },
+    "custom_api_base": {
+        "description": "自定义 API Base URL（可选）",
+        "type": "string",
+        "hint": "自定义的 API 基础地址，如果不填写则使用默认的 OpenRouter API 地址。例如：https://api.openrouter.ai",
+        "default": "",
+        "obvious_hint": false
+    },
+    "model_name": {
+        "description": "使用的模型名称",
+        "type": "string",
+        "hint": "OpenRouter 支持的图像生成模型，例如：google/gemini-2.5-flash-image-preview:free",
+        "default": "google/gemini-2.5-flash-image-preview:free",
+        "obvious_hint": true
+    },
+    "max_retry_attempts": {
+        "description": "每个API密钥的最大重试次数",
+        "type": "int",
+        "hint": "当API请求失败时，每个密钥最多重试几次。推荐2-5次。",
+        "default": 3
+    },
+    "holidays_file": {
+        "description": "节假日数据文件名",
+        "type": "string",
+        "default": "holidays.json"
+    },
+    "nap_server_address": {
+        "description": "（可选）NAP cat 服务地址，用于跨服务器传输文件",
+        "type": "string",
+        "default": "localhost"
+    },
+    "nap_server_port": {
+        "description": "（可选）NAP cat 文件接收端口",
+        "type": "int",
+        "default": 3658
+    },
+    "reference_images": {
+        "description": "参考图生成配置",
+        "type": "object",
+        "items": {
+            "enabled": {
+                "description": "是否启用参考图功能",
+                "type": "bool",
+                "default": false
+            },
+            "image_paths": {
+                "description": "参考图文件路径列表（相对于插件目录）",
+                "type": "list",
+                "default": []
+            },
+            "max_images": {
+                "description": "最多使用的参考图数量",
+                "type": "int",
+                "default": 3
+            }
+        }
+    },
+    "end_of_holiday_blessing": {
+        "description": "假期结束提醒功能",
+        "type": "object",
+        "hint": "在假期的最后一天晚上发送“收假”提醒和祝福。",
+        "items": {
+            "enabled": {
+                "description": "是否启用此功能",
+                "type": "bool",
+                "default": true
+            },
+            "send_time": {
+                "description": "每日发送时间 (HH:MM)",
+                "type": "string",
+                "default": "22:00"
+            }
+        }
+    }
+}
