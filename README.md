@@ -1,6 +1,6 @@
-# 🤖 AstrBot 节日祝福插件 (SendBlessings)
+# 🤖 AstrBot 节日祝福插件 (BlessingHolidays)
 
-[简体中文] [[English]](./README_en.md)
+## 修改自cheng-maomao的SendBlessings插件
 
 ---
 
@@ -24,7 +24,7 @@
 ## ⚙️ 安装与配置
 
 1. **下载插件**: 推荐使用AstrBot的插件管理器安装。或者将插件文件夹放置于 AstrBot 的 `data/plugins` 目录下，并手动安装依赖。
-2. **配置插件**: 在 AstrBot 的 WebUI 中，进入“插件管理”，找到“SendBlessings”插件，点击“配置”按钮进行可视化配置。
+2. **配置插件**: 在 AstrBot 的 WebUI 中，进入“插件管理”，找到“blessingholidays”插件，点击“配置”按钮进行可视化配置。
 
 ### 🔧 配置项说明
 
@@ -49,7 +49,7 @@
 -   `/blessings reload`: 重新从网络获取并加载当前年份的节假日数据。
 -   `/blessings check`: 检查今天是否是节假日的第一天，并返回检查结果。
 -   `/blessings manual [holiday_name]`: 手动触发一次祝福生成和发送流程。如果提供了 `holiday_name`，则使用该名称。该命令会将祝福发送到**当前会话**，主要用于测试。
-*暂时无法实现*-   ~~`/blessings test [holiday_name]`: 手动向所有好友和群组广播一次测试祝福。~~
+*暂时无法实现*-   ~~`/blessings test [holiday_name]`: 手动向所有好友和群组广播一次测试祝福。
 
 
 ## 🛠️ 技术实现

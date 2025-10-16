@@ -218,8 +218,8 @@ def check_single_date(date_input: date, holidays: list):
     logger.info(f"查询结果: 在 {date_input.year} 年的记录中未找到 {date_input}。")
 
 
-@register("SendBlessings", "Cheng-MaoMao", "在节假日自动送上祝福（纯文本）", "1.0.8")
-class SendBlessingsPlugin(Star):
+@register("BlessingHolidays", "Cheng-MaoMao", "在节假日自动送上祝福（纯文本）", "1.0.8")
+class BlessingHolidaysPlugin(Star):
     """
     自动发送节假日祝福插件。
 
@@ -238,7 +238,7 @@ class SendBlessingsPlugin(Star):
         
         # 手动构建插件数据目录以实现数据隔离
         base_data_dir = Path(self.context.get_config().get('data_dir', 'data'))
-        plugin_name = self.context.get_registered_star("SendBlessings").name
+        plugin_name = self.context.get_registered_star("BlessingHolidays").name
         self.plugin_data_dir = base_data_dir / "plugin_data" / plugin_name
         self.plugin_data_dir.mkdir(parents=True, exist_ok=True)
         
