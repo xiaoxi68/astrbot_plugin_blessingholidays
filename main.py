@@ -4,17 +4,14 @@ from astrbot.api.platform import MessageType
 from astrbot.api import logger
 import astrbot.api.message_components as Comp
 import asyncio
-import aiofiles
 import json
 import os
-import base64
 from datetime import datetime, date, timedelta
 from chinese_calendar import is_holiday, is_workday
 import chinese_calendar as ch_calendar
 from cn_bing_translator import Translator
 from pathlib import Path
-from .utils.ttp import generate_image_openrouter
-from .utils.file_send_server import send_file
+# 已移除配图相关依赖，仅保留文本祝福功能
 
 
 
@@ -221,7 +218,7 @@ def check_single_date(date_input: date, holidays: list):
     logger.info(f"查询结果: 在 {date_input.year} 年的记录中未找到 {date_input}。")
 
 
-@register("SendBlessings", "Cheng-MaoMao", "在节假日自动送上祝福并配图", "1.0.8")
+@register("SendBlessings", "Cheng-MaoMao", "在节假日自动送上祝福（纯文本）", "1.0.8")
 class SendBlessingsPlugin(Star):
     """
     自动发送节假日祝福插件。
@@ -247,22 +244,11 @@ class SendBlessingsPlugin(Star):
         
         self.json_file = self.plugin_data_dir / self.config.get('holidays_file', 'holidays.json')
         
-        # 加载图像生成 (OpenRouter) 相关配置
-        self.openrouter_api_keys = config.get("openrouter_api_keys", [])
-        self.model_name = config.get("model_name", "google/gemini-2.5-flash-image-preview:free")
-        self.max_retry_attempts = config.get("max_retry_attempts", 3)
-        self.custom_api_base = config.get("custom_api_base", "").strip()
-        
-        # 加载文件传输服务器 (NAP) 相关配置
-        self.nap_server_address = config.get("nap_server_address", "localhost")
-        self.nap_server_port = config.get("nap_server_port", 3658)
-        
-        # 加载参考图相关配置
-        self.reference_images_config = config.get("reference_images", {})
+        # LLM 选择（纯文本模式下用于生成祝福文案）
+        self.llm_provider_id = str(config.get("llm_provider_id", "")).strip()
+
+        # 图片/文件传输相关配置已移除（纯文本模式）
         self.test_targets = config.get("test_targets", {})
-        self.reference_images_enabled = self.reference_images_config.get("enabled", False)
-        self.reference_image_paths = self.reference_images_config.get("image_paths", [])
-        self.max_reference_images = self.reference_images_config.get("max_images", 3)
         
         self.holidays = []
         self.logger = logger
@@ -348,22 +334,13 @@ class SendBlessingsPlugin(Star):
         """
         try:
             # 1. 生成祝福语
-            blessing = await self.generate_blessing(holiday_name)
+            blessing = await self.generate_blessing(holiday_name, event)
             if not blessing:
                 yield event.plain_result("祝福语生成失败。")
                 return
             
-            # 2. 生成图片
-            image_url, image_path = await self.generate_image(blessing, holiday_name)
-            if not image_url:
-                yield event.plain_result("图片生成失败。")
-                return
-            
-            # 3. 发送到当前会话
-            if image_path:
-                yield event.chain_result([Comp.Plain(blessing), Comp.Image.fromFileSystem(image_path)])
-            else:
-                yield event.plain_result(f"{blessing}\n(图片生成失败)")
+            # 2. 发送到当前会话（纯文本）
+            yield event.plain_result(blessing)
             yield event.plain_result("手动祝福已发送到当前会话！")
         except Exception as e:
             self.logger.error(f"手动祝福失败: {e}")
@@ -388,22 +365,14 @@ class SendBlessingsPlugin(Star):
 
             yield event.plain_result(f"开始向 {len(group_ids)} 个群组和 {len(user_ids)} 个用户发送测试祝福...")
 
-            # 1. 生成祝福语和图片
-            blessing = await self.generate_blessing(holiday_name)
+            # 1. 生成祝福语
+            blessing = await self.generate_blessing(holiday_name, event)
             if not blessing:
                 yield event.plain_result("祝福语生成失败，测试中止。")
                 return
-            
-            image_url, image_path = await self.generate_image(blessing, holiday_name)
-            if not image_url:
-                yield event.plain_result("图片生成失败，测试中止。")
-                return
 
-            # 2. 构建消息链
-            chain = [
-                Comp.Plain(blessing),
-                Comp.Image.fromFileSystem(image_path) if image_path else Comp.Plain("(图片生成失败)")
-            ]
+            # 2. 构建消息链（纯文本）
+            chain = [Comp.Plain(blessing)]
 
             # 3. 发送消息
             success_count = 0
@@ -452,113 +421,6 @@ class SendBlessingsPlugin(Star):
             self.logger.error(f"测试祝福指令失败: {e}")
             yield event.plain_result(f"测试指令执行失败: {str(e)}")
 
-    async def load_reference_images(self) -> list[str]:
-        """
-        加载并转换配置文件中指定的参考图片为base64格式。
-
-        Returns:
-            list[str]: base64编码的图像数据URI列表。
-        """
-        if not self.reference_images_enabled:
-            return []
-        
-        base64_images = []
-        valid_paths = self.validate_image_paths()
-        
-        for image_path in valid_paths[:self.max_reference_images]:
-            try:
-                base64_data = await self.convert_image_to_base64(image_path)
-                if base64_data:
-                    base64_images.append(base64_data)
-            except Exception as e:
-                self.logger.warning(f"加载参考图 {image_path} 失败: {e}")
-        
-        if base64_images:
-            self.logger.info(f"成功加载 {len(base64_images)} 张参考图")
-        
-        return base64_images
-
-    def validate_image_paths(self) -> list[str]:
-        """
-        验证参考图片路径的有效性，支持相对和绝对路径。
-
-        Returns:
-            list[str]: 有效的图片绝对路径列表。
-        """
-        valid_paths = []
-        for path in self.reference_image_paths:
-            full_path = path if os.path.isabs(path) else os.path.join(os.path.dirname(__file__), path)
-            
-            if os.path.exists(full_path) and os.path.isfile(full_path):
-                valid_paths.append(full_path)
-            else:
-                self.logger.warning(f"配置的参考图路径不存在: {path}")
-        return valid_paths
-
-    async def convert_image_to_base64(self, image_path: str) -> str | None:
-        """
-        将单个图片文件转换为base64编码的data URI。
-
-        Args:
-            image_path (str): 图片文件的路径。
-
-        Returns:
-            str | None: 成功时返回data URI字符串，失败时返回None。
-        """
-        try:
-            async with aiofiles.open(image_path, 'rb') as f:
-                image_data = await f.read()
-            
-            if len(image_data) > 5 * 1024 * 1024:  # 5MB
-                self.logger.warning(f"参考图 {image_path} 过大 ({len(image_data)/1024/1024:.1f}MB)，可能导致API请求失败。")
-            
-            base64_data = base64.b64encode(image_data).decode('utf-8')
-            
-            # 根据文件扩展名确定MIME类型
-            ext = os.path.splitext(image_path)[1].lower()
-            mime_map = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp'}
-            mime_type = mime_map.get(ext, 'image/png')
-            if ext not in mime_map:
-                self.logger.warning(f"未知的参考图格式 '{ext}'，将使用默认的 'image/png' MIME类型。")
-            
-            return f"data:{mime_type};base64,{base64_data}"
-            
-        except Exception as e:
-            self.logger.error(f"转换图片 {image_path} 为base64失败: {e}")
-            return None
-
-    def build_reference_prompt(self, blessing: str, holiday_name: str, has_reference: bool) -> str:
-        """
-        构建用于图像生成的最终提示词。
-
-        - 包含核心主题、风格和节日元素。
-        - 强制加入负面提示词，以避免生成任何文字、旗帜或宗教符号。
-        - 如果有参考图，会调整提示词以指导模型在参考图基础上创作。
-
-        Args:
-            blessing (str): 生成的祝福语（当前版本未使用，但保留以备将来扩展）。
-            holiday_name (str): 节日名称。
-            has_reference (bool): 是否有参考图。
-
-        Returns:
-            str: 构建好的最终提示词。
-        """
-        base_prompt = f"{holiday_name} festival celebration, warm and festive style, cartoon illustration. Incorporate holiday elements like lanterns, flowers, or snowflakes. High quality, rich festive atmosphere."
-        negative_prompt = "IMPORTANT: Do NOT generate any text, words, letters, characters, flags, national emblems, or religious symbols. The image must be purely visual and contain no writing."
-
-        if has_reference:
-            return (
-                f"Based on the provided reference image(s), create a new artwork with the theme of '{holiday_name}'. "
-                f"**Task**: Identify the main character(s) in the reference image(s) and place them into a new, festive scene that matches the '{holiday_name}' theme. "
-                f"**Character Modifications**: While preserving the core identity (face, hairstyle) of the character(s), you MUST **change their clothing** to festive attire suitable for '{holiday_name}' (e.g., traditional Chinese outfits for Spring Festival, modern festive wear for New Year). "
-                f"**Actions and Props**: The character(s) should be performing a festive action (e.g., lighting lanterns, setting off fireworks, holding festive items). Add relevant props like red envelopes, lanterns, or holiday food. "
-                f"**Scene**: The background should be a rich, festive environment related to '{holiday_name}'. "
-                f"**Style**: The final image should be a high-quality, harmonious cartoon illustration with a warm and joyful atmosphere. "
-                f"{negative_prompt}"
-            )
-        else:
-            return f"{base_prompt} {negative_prompt}"
-
     async def terminate(self):
         """
         插件终止时调用的清理方法。
@@ -590,20 +452,13 @@ class SendBlessingsPlugin(Star):
                     holiday_name = today_info['holiday_name']
                     self.logger.info(f"检测到假期第一天：{holiday_name}，开始发送祝福...")
                     
-                    blessing = await self.generate_blessing(holiday_name)
+                    blessing = await self.generate_blessing(holiday_name, None)
                     if not blessing:
                         self.logger.error("祝福语生成失败，跳过本次发送。")
                         continue
                     
-                    image_url, image_path = await self.generate_image(blessing, holiday_name)
-                    if not image_url:
-                        self.logger.error("图片生成失败，跳过本次发送。")
-                        continue
-                    
-                    chain = [
-                        Comp.Plain(blessing),
-                        Comp.Image.fromFileSystem(image_path) if image_path else Comp.Plain("(图片生成失败)")
-                    ]
+                    # 仅发送纯文本祝福
+                    chain = [Comp.Plain(blessing)]
                     
                     # --- 平台无关的广播逻辑 ---
                     sent_count = 0
@@ -666,7 +521,7 @@ class SendBlessingsPlugin(Star):
                 self.logger.error(f"每日祝福检查任务发生严重错误: {e}")
                 await asyncio.sleep(3600)
     
-    async def generate_blessing(self, holiday_name: str) -> str:
+    async def generate_blessing(self, holiday_name: str, event: AstrMessageEvent | None = None) -> str:
         """
         生成节日祝福语。
 
@@ -682,10 +537,25 @@ class SendBlessingsPlugin(Star):
         try:
             # 尝试使用LLM生成
             try:
-                provider = self.context.get_using_provider()
+                provider = None
+                # 1) 优先使用配置中指定的提供商
+                if self.llm_provider_id:
+                    try:
+                        provider = self.context.get_provider_by_id(provider_id=self.llm_provider_id)
+                    except Exception as e:
+                        self.logger.warning(f"按配置 provider_id 获取提供商失败，将回退到当前使用提供商: {e}")
+                # 2) 回退到当前上下文正在使用的提供商
+                if provider is None:
+                    try:
+                        if event is not None and hasattr(event, 'unified_msg_origin'):
+                            provider = self.context.get_using_provider(umo=event.unified_msg_origin)
+                        else:
+                            provider = self.context.get_using_provider()
+                    except Exception as e:
+                        self.logger.warning(f"获取当前使用的提供商失败: {e}")
+
                 if provider:
                     prompt = f"请为“{holiday_name}”这个节日生成一段温暖、简短的中文祝福语（50-100字），要体现节日特色和美好祝愿。"
-                    
                     resp = await provider.text_chat(
                         prompt=prompt,
                         system_prompt="你是一个专业的节日祝福生成器，你的回答应该只包含祝福语文本本身，不要添加任何额外的解释或引言。"
@@ -721,73 +591,9 @@ class SendBlessingsPlugin(Star):
             self.logger.error(f"生成祝福语时发生未知错误: {e}")
             return f"祝您{holiday_name}快乐！"
     
-    async def generate_image(self, blessing: str, holiday_name: str, cmd_ref_images: list[str] = None) -> tuple[str | None, str | None]:
-        """
-        生成并保存节日祝福图片。
 
-        调用 `utils.ttp.generate_image_openrouter` 函数执行生成，并处理后续的
-        文件传输（如果配置了NAP服务器）。
 
-        Args:
-            blessing (str): 生成的祝福语，用于构建提示词。
-            holiday_name (str): 节日名称，用于构建提示词。
-            cmd_ref_images (list[str], optional): 从指令中直接提供的参考图 (base64-encoded). Defaults to None.
-
-        Returns:
-            tuple[str | None, str | None]: 成功时返回(图片URL, 图片本地/远程路径)，失败时返回(None, None)。
-        """
-        try:
-            if not self.openrouter_api_keys:
-                self.logger.warning("未配置OpenRouter API密钥，跳过图片生成。")
-                return None, None
-            
-            # 1. 确定要使用的参考图
-            # 优先使用从指令传入的参考图
-            if cmd_ref_images:
-                reference_images = cmd_ref_images
-                self.logger.info(f"使用指令中提供的 {len(reference_images)} 张参考图。")
-            else:
-                # 否则，加载配置文件中指定的参考图
-                reference_images = await self.load_reference_images()
-            
-            # 2. 构建最终的图像生成提示词
-            prompt = self.build_reference_prompt(blessing, holiday_name, bool(reference_images))
-            
-            # 3. 调用图像生成函数
-            image_url, image_path = await generate_image_openrouter(
-                prompt=prompt,
-                api_keys=self.openrouter_api_keys,
-                model=self.model_name,
-                data_dir=self.plugin_data_dir,
-                input_images=reference_images,
-                max_retry_attempts=self.max_retry_attempts,
-                api_base=self.custom_api_base if self.custom_api_base else None
-            )
-            
-            if not image_url or not image_path:
-                self.logger.error("图片生成失败。")
-                return None, None
-            
-            # 4. 如果配置了NAP服务器，则将文件传输到远程
-            if self.nap_server_address and self.nap_server_address != "localhost":
-                try:
-                    transferred_path = await send_file(image_path, host=self.nap_server_address, port=self.nap_server_port)
-                    if transferred_path:
-                        image_path = transferred_path  # 更新为服务器上的路径
-                        self.logger.info(f"图片成功传输到NAP服务器: {image_path}")
-                    else:
-                        self.logger.warning("NAP服务器未返回有效路径，将使用本地路径。")
-                except Exception as e:
-                    self.logger.warning(f"NAP文件传输失败，将使用本地路径: {e}")
-            
-            self.logger.info(f"节日图片已准备就绪: {image_path}")
-            return image_url, image_path
-            
-        except Exception as e:
-            self.logger.error(f"生成图片过程中发生未知错误: {e}")
-            return None, None
-
-    async def generate_end_of_holiday_blessing(self, holiday_name: str) -> str:
+    async def generate_end_of_holiday_blessing(self, holiday_name: str, event: AstrMessageEvent | None = None) -> str:
         """
         生成假期结束的祝福语。
 
@@ -800,10 +606,23 @@ class SendBlessingsPlugin(Star):
         try:
             # 尝试使用LLM生成
             try:
-                provider = self.context.get_using_provider()
+                provider = None
+                if self.llm_provider_id:
+                    try:
+                        provider = self.context.get_provider_by_id(provider_id=self.llm_provider_id)
+                    except Exception as e:
+                        self.logger.warning(f"按配置 provider_id 获取提供商失败，将回退到当前使用提供商: {e}")
+                if provider is None:
+                    try:
+                        if event is not None and hasattr(event, 'unified_msg_origin'):
+                            provider = self.context.get_using_provider(umo=event.unified_msg_origin)
+                        else:
+                            provider = self.context.get_using_provider()
+                    except Exception as e:
+                        self.logger.warning(f"获取当前使用的提供商失败: {e}")
+
                 if provider:
                     prompt = f"为“{holiday_name}”假期的最后一天晚上，生成一段简短温馨的中文祝福语（50-100字）。内容应包含对假期的回顾，并鼓励大家以饱满的热情迎接接下来的工作和生活。"
-                    
                     resp = await provider.text_chat(
                         prompt=prompt,
                         system_prompt="你是一个善于鼓励和给予温暖祝福的AI助手。你的回答应该只包含祝福语文本本身，不要添加任何额外的解释或引言。"
@@ -852,19 +671,10 @@ class SendBlessingsPlugin(Star):
                     self.logger.info(f"检测到假期最后一天：{holiday_name}，准备发送结束提醒...")
 
                     # 1. 生成祝福语
-                    blessing = await self.generate_end_of_holiday_blessing(holiday_name)
+                    blessing = await self.generate_end_of_holiday_blessing(holiday_name, None)
                     
-                    # 2. 生成图片
-                    image_url, image_path = await self.generate_image(blessing, holiday_name)
-                    if not image_url:
-                        self.logger.error("假期结束提醒的图片生成失败，将只发送文字。")
-
-                    # 3. 构建消息链
+                    # 2. 构建消息链（纯文本）
                     chain = [Comp.Plain(blessing)]
-                    if image_path:
-                        chain.append(Comp.Image.fromFileSystem(image_path))
-                    else:
-                        chain.append(Comp.Plain("\n(图片生成失败)"))
 
                     # 4. 发送到所有目标会话
                     sent_count = 0
