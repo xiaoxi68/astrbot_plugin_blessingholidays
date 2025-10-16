@@ -528,24 +528,18 @@ class BlessingHolidaysPlugin(Star):
                     # --- 平台无关的广播逻辑 ---
                     sent_count = 0
                     all_platforms = self.context.platform_manager.get_insts()
-                # 跨平台去重集合（用户/群组）
-                sent_user_ids: set[str] = set()
-                sent_group_ids: set[str] = set()
-                # 跨平台去重集合（用户/群组）
-                sent_user_ids: set[str] = set()
-                sent_group_ids: set[str] = set()
-                for platform in all_platforms:
+                    # 跨平台去重集合（用户/群组）
+                    sent_user_ids: set[str] = set()
+                    sent_group_ids: set[str] = set()
+                    for platform in all_platforms:
                         # 仅针对支持 get_client 和 call_action 的平台 (如 aiocqhttp)
                         if not hasattr(platform, "get_client") or not platform.get_client() or not hasattr(platform.get_client().api, "call_action"):
                             continue
-                        
                         self.logger.info(f"正在通过平台 '{platform.meta.name}' 进行广播...")
                         client = platform.get_client()
-                        
                         try:
                             friend_list = await client.api.call_action("get_friend_list")
                             group_list = await client.api.call_action("get_group_list")
-
                             # 发送到好友（跨平台去重）
                             for friend in friend_list:
                                 user_id = friend.get('user_id')
@@ -563,7 +557,6 @@ class BlessingHolidaysPlugin(Star):
                                     await asyncio.sleep(self.send_interval_friend_seconds)
                                 except Exception as e:
                                     self.logger.error(f"发送祝福到用户 {user_id} 失败: {e}")
-                            
                             # 发送到群组（跨平台去重）
                             for group in group_list:
                                 group_id = group.get('group_id')
@@ -583,7 +576,6 @@ class BlessingHolidaysPlugin(Star):
                                     self.logger.error(f"发送祝福到群组 {group_id} 失败: {e}")
                         except Exception as e:
                             self.logger.error(f"从平台 '{platform.meta.name}' 获取好友/群组列表失败: {e}")
-
                     if sent_count > 0:
                         self.logger.info(f"今日({holiday_name})祝福已成功发送到 {sent_count} 个会话。")
                     else:
@@ -760,6 +752,9 @@ class BlessingHolidaysPlugin(Star):
                     # 4. 发送到所有目标会话
                     sent_count = 0
                     all_platforms = self.context.platform_manager.get_insts()
+                    # 跨平台去重集合（用户/群组）
+                    sent_user_ids: set[str] = set()
+                    sent_group_ids: set[str] = set()
                     for platform in all_platforms:
                         if not hasattr(platform, "get_client") or not platform.get_client() or not hasattr(platform.get_client().api, "call_action"):
                             continue
