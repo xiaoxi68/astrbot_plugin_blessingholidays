@@ -1,4 +1,4 @@
-from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult
+from astrbot.api.event import filter, AstrMessageEvent, MessageEventResult, MessageChain
 from astrbot.api.star import Context, Star, register
 from astrbot.api.platform import MessageType
 from astrbot.api import logger
@@ -245,10 +245,7 @@ class BlessingHolidaysPlugin(Star):
         self.llm_provider_id = str(config.get("llm_provider_id", "")).strip()
 
         # 图片/文件传输相关配置已移除（纯文本模式）
-        self.test_targets = config.get("test_targets", {})
-        # 发送节流参数（内置常量，可按需调整源码）
-        self.send_interval_friend_seconds = 5
-        self.send_interval_group_seconds = 3
+        # 发送间隔（硬编码，保持原有逻辑）
         
         self.holidays = []
         self.logger = logger
@@ -260,6 +257,21 @@ class BlessingHolidaysPlugin(Star):
         
         # 在后台启动异步初始化任务
         asyncio.create_task(self.initialize())
+
+    def _get_platform_name(self, platform) -> str:
+        """稳健获取平台名称，兼容 meta 为属性或可调用对象。"""
+        try:
+            meta = getattr(platform, 'meta', None)
+            if callable(meta):
+                meta = meta()
+            if meta and hasattr(meta, 'name'):
+                return meta.name
+        except Exception:
+            pass
+        try:
+            return getattr(platform, '__class__', type(platform)).__name__
+        except Exception:
+            return 'unknown'
 
     async def initialize(self):
         """
@@ -417,11 +429,19 @@ class BlessingHolidaysPlugin(Star):
             holiday_name (str, optional): 要测试的节日名称。默认为 "手动测试"。
         """
         try:
-            group_ids = self.test_targets.get("group_ids", [])
-            user_ids = self.test_targets.get("user_ids", [])
+            # 改为基于当前会话推断测试目标（不再使用配置）
+            group_ids = []
+            user_ids = []
+            try:
+                if hasattr(event, 'get_group_id') and event.get_group_id():
+                    group_ids = [event.get_group_id()]
+                if hasattr(event, 'get_sender_id') and event.get_sender_id():
+                    user_ids = [event.get_sender_id()]
+            except Exception:
+                pass
 
             if not group_ids and not user_ids:
-                yield event.plain_result("测试目标未配置。请在插件配置中设置 'test_targets'。")
+                yield event.plain_result("未能从当前会话推断测试目标，请在群聊触发或私聊触发此命令。")
                 return
 
             yield event.plain_result(f"开始向 {len(group_ids)} 个群组和 {len(user_ids)} 个用户发送测试祝福...")
@@ -433,7 +453,7 @@ class BlessingHolidaysPlugin(Star):
                 return
 
             # 2. 构建消息链（纯文本）
-            chain = [Comp.Plain(blessing)]
+            chain = MessageChain().message(blessing)
 
             # 3. 发送消息
             success_count = 0
@@ -443,16 +463,17 @@ class BlessingHolidaysPlugin(Star):
             for group_id in group_ids:
                 sent_on_any_platform = False
                 for platform in self.context.platform_manager.get_insts():
-                    session_str = f"{platform.meta.name}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
+                    pname = self._get_platform_name(platform)
+                    session_str = f"{pname}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
                     try:
                         if await self.context.send_message(session_str, chain):
                             success_count += 1
-                            self.logger.info(f"测试祝福已发送到群组 {group_id} (平台: {platform.meta.name})")
+                            self.logger.info(f"测试祝福已发送到群组 {group_id} (平台: {pname})")
                             await asyncio.sleep(2)
                             sent_on_any_platform = True
                             break
                     except Exception as e:
-                        self.logger.warning(f"尝试通过平台 {platform.meta.name} 发送测试祝福到群组 {group_id} 失败: {e}")
+                        self.logger.warning(f"尝试通过平台 {pname} 发送测试祝福到群组 {group_id} 失败: {e}")
                 if not sent_on_any_platform:
                     fail_count += 1
                     self.logger.error(f"发送测试祝福到群组 {group_id} 失败: 所有平台都无法发送。")
@@ -461,16 +482,17 @@ class BlessingHolidaysPlugin(Star):
             for user_id in user_ids:
                 sent_on_any_platform = False
                 for platform in self.context.platform_manager.get_insts():
-                    session_str = f"{platform.meta.name}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
+                    pname = self._get_platform_name(platform)
+                    session_str = f"{pname}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
                     try:
                         if await self.context.send_message(session_str, chain):
                             success_count += 1
-                            self.logger.info(f"测试祝福已发送到用户 {user_id} (平台: {platform.meta.name})")
+                            self.logger.info(f"测试祝福已发送到用户 {user_id} (平台: {pname})")
                             await asyncio.sleep(2)
                             sent_on_any_platform = True
                             break
                     except Exception as e:
-                        self.logger.warning(f"尝试通过平台 {platform.meta.name} 发送测试祝福到用户 {user_id} 失败: {e}")
+                        self.logger.warning(f"尝试通过平台 {pname} 发送测试祝福到用户 {user_id} 失败: {e}")
                 if not sent_on_any_platform:
                     fail_count += 1
                     self.logger.error(f"发送测试祝福到用户 {user_id} 失败: 所有平台都无法发送。")
@@ -517,61 +539,52 @@ class BlessingHolidaysPlugin(Star):
                     holiday_name = today_info['holiday_name']
                     self.logger.info(f"检测到假期第一天：{holiday_name}，开始发送祝福...")
                     
-                    blessing = await self.generate_blessing(holiday_name, None)
-                    if not blessing:
+                    # 为好友与群组分别生成不同风格的祝福
+                    blessing_friend = await self.generate_blessing(holiday_name, None, audience='friend')
+                    blessing_group = await self.generate_blessing(holiday_name, None, audience='group')
+                    if not (blessing_friend or blessing_group):
                         self.logger.error("祝福语生成失败，跳过本次发送。")
                         continue
-                    
-                    # 仅发送纯文本祝福
-                    chain = [Comp.Plain(blessing)]
                     
                     # --- 平台无关的广播逻辑 ---
                     sent_count = 0
                     all_platforms = self.context.platform_manager.get_insts()
-                    # 跨平台去重集合（用户/群组）
-                    sent_user_ids: set[str] = set()
-                    sent_group_ids: set[str] = set()
                     for platform in all_platforms:
                         # 仅针对支持 get_client 和 call_action 的平台 (如 aiocqhttp)
                         if not hasattr(platform, "get_client") or not platform.get_client() or not hasattr(platform.get_client().api, "call_action"):
                             continue
-                        self.logger.info(f"正在通过平台 '{platform.meta.name}' 进行广播...")
+                        pname = self._get_platform_name(platform)
+                        self.logger.info(f"正在通过平台 '{pname}' 进行广播...")
                         client = platform.get_client()
                         try:
                             friend_list = await client.api.call_action("get_friend_list")
                             group_list = await client.api.call_action("get_group_list")
-                            # 发送到好友（跨平台去重）
+                            # 发送到好友
                             for friend in friend_list:
                                 user_id = friend.get('user_id')
                                 if not user_id:
                                     continue
-                                uid = str(user_id)
-                                if uid in sent_user_ids:
-                                    continue
-                                session_str = f"{platform.meta.name}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
+                                session_str = f"{pname}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
                                 try:
-                                    await self.context.send_message(session_str, chain)
+                                    chain_friend = [Comp.Plain(blessing_friend or blessing_group)]
+                                    await self.context.send_message(session_str, chain_friend)
                                     sent_count += 1
                                     self.logger.info(f"祝福消息已发送到用户 {user_id}")
-                                    sent_user_ids.add(uid)
-                                    await asyncio.sleep(self.send_interval_friend_seconds)
+                                    await asyncio.sleep(5)
                                 except Exception as e:
                                     self.logger.error(f"发送祝福到用户 {user_id} 失败: {e}")
-                            # 发送到群组（跨平台去重）
+                            # 发送到群组
                             for group in group_list:
                                 group_id = group.get('group_id')
                                 if not group_id:
                                     continue
-                                gid = str(group_id)
-                                if gid in sent_group_ids:
-                                    continue
-                                session_str = f"{platform.meta.name}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
+                                session_str = f"{pname}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
                                 try:
-                                    await self.context.send_message(session_str, chain)
+                                    chain_group = [Comp.Plain(blessing_group or blessing_friend)]
+                                    await self.context.send_message(session_str, chain_group)
                                     sent_count += 1
                                     self.logger.info(f"祝福消息已发送到群组 {group_id}")
-                                    sent_group_ids.add(gid)
-                                    await asyncio.sleep(self.send_interval_group_seconds)
+                                    await asyncio.sleep(5)
                                 except Exception as e:
                                     self.logger.error(f"发送祝福到群组 {group_id} 失败: {e}")
                         except Exception as e:
@@ -594,7 +607,7 @@ class BlessingHolidaysPlugin(Star):
                 self.logger.error(f"每日祝福检查任务发生严重错误: {e}")
                 await asyncio.sleep(3600)
     
-    async def generate_blessing(self, holiday_name: str, event: AstrMessageEvent | None = None) -> str:
+    async def generate_blessing(self, holiday_name: str, event: AstrMessageEvent | None = None, audience: str | None = None) -> str:
         """
         生成节日祝福语。
 
@@ -628,7 +641,19 @@ class BlessingHolidaysPlugin(Star):
                         self.logger.warning(f"获取当前使用的提供商失败: {e}")
 
                 if provider:
-                    prompt = f"请为“{holiday_name}”这个节日生成一段温暖、简短的中文祝福语（50-100字），要体现节日特色和美好祝愿。"
+                    # 根据 audience 构建不同的提示词（私聊更亲切，群聊更面向“大家”）
+                    if audience == 'friend':
+                        prompt = (
+                            f"请为“{holiday_name}”这个节日生成一段温暖、简短的中文祝福语（50-100字）。"
+                            f"请直接对收件人使用“你”的称呼，突出个体关怀，避免使用群体称呼或@。"
+                        )
+                    elif audience == 'group':
+                        prompt = (
+                            f"请为“{holiday_name}”这个节日生成一段适合群聊的中文祝福语（50-100字）。"
+                            f"请面向“大家/各位”等群体称呼，营造节日氛围与互动感，避免使用@或特殊格式。"
+                        )
+                    else:
+                        prompt = f"请为“{holiday_name}”这个节日生成一段温暖、简短的中文祝福语（50-100字），要体现节日特色和美好祝愿。"
                     resp = await provider.text_chat(
                         prompt=prompt,
                         system_prompt="你是一个专业的节日祝福生成器，你的回答应该只包含祝福语文本本身，不要添加任何额外的解释或引言。"
@@ -666,7 +691,7 @@ class BlessingHolidaysPlugin(Star):
     
 
 
-    async def generate_end_of_holiday_blessing(self, holiday_name: str, event: AstrMessageEvent | None = None) -> str:
+    async def generate_end_of_holiday_blessing(self, holiday_name: str, event: AstrMessageEvent | None = None, audience: str | None = None) -> str:
         """
         生成假期结束的祝福语。
 
@@ -695,7 +720,21 @@ class BlessingHolidaysPlugin(Star):
                         self.logger.warning(f"获取当前使用的提供商失败: {e}")
 
                 if provider:
-                    prompt = f"为“{holiday_name}”假期的最后一天晚上，生成一段简短温馨的中文祝福语（50-100字）。内容应包含对假期的回顾，并鼓励大家以饱满的热情迎接接下来的工作和生活。"
+                    if audience == 'friend':
+                        prompt = (
+                            f"为“{holiday_name}”假期的最后一天晚上，生成一段简短温馨的中文祝福语（50-100字）。"
+                            f"请直接对收件人使用“你”的称呼，包含温柔的祝愿与轻度鼓励，避免群体称呼。"
+                        )
+                    elif audience == 'group':
+                        prompt = (
+                            f"为“{holiday_name}”假期的最后一天晚上，生成一段适合群聊的简短温馨祝福（50-100字）。"
+                            f"请面向“大家/各位”等群体称呼，包含对假期的简短回顾，并鼓励大家以积极状态迎接接下来的工作和生活。"
+                        )
+                    else:
+                        prompt = (
+                            f"为“{holiday_name}”假期的最后一天晚上，生成一段简短温馨的中文祝福语（50-100字）。"
+                            f"内容应包含对假期的回顾，并鼓励大家以饱满的热情迎接接下来的工作和生活。"
+                        )
                     resp = await provider.text_chat(
                         prompt=prompt,
                         system_prompt="你是一个善于鼓励和给予温暖祝福的AI助手。你的回答应该只包含祝福语文本本身，不要添加任何额外的解释或引言。"
@@ -744,10 +783,12 @@ class BlessingHolidaysPlugin(Star):
                     self.logger.info(f"检测到假期最后一天：{holiday_name}，准备发送结束提醒...")
 
                     # 1. 生成祝福语
-                    blessing = await self.generate_end_of_holiday_blessing(holiday_name, None)
+                    blessing_friend = await self.generate_end_of_holiday_blessing(holiday_name, None, audience='friend')
+                    blessing_group = await self.generate_end_of_holiday_blessing(holiday_name, None, audience='group')
                     
                     # 2. 构建消息链（纯文本）
-                    chain = [Comp.Plain(blessing)]
+                    chain_friend = MessageChain().message(blessing_friend or blessing_group)
+                    chain_group = MessageChain().message(blessing_group or blessing_friend)
 
                     # 4. 发送到所有目标会话
                     sent_count = 0
@@ -759,6 +800,7 @@ class BlessingHolidaysPlugin(Star):
                         if not hasattr(platform, "get_client") or not platform.get_client() or not hasattr(platform.get_client().api, "call_action"):
                             continue
                         
+                        pname = self._get_platform_name(platform)
                         self.logger.info(f"正在通过平台 '{platform.meta.name}' 发送假期结束提醒...")
                         client = platform.get_client()
                         
@@ -766,39 +808,31 @@ class BlessingHolidaysPlugin(Star):
                             friend_list = await client.api.call_action("get_friend_list")
                             group_list = await client.api.call_action("get_group_list")
 
-                            # 发送到好友（跨平台去重）
+                            # 发送到好友
                             for friend in friend_list:
                                 user_id = friend.get('user_id')
                                 if not user_id:
                                     continue
-                                uid = str(user_id)
-                                if uid in sent_user_ids:
-                                    continue
-                                session_str = f"{platform.meta.name}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
+                                session_str = f"{pname}:{MessageType.FRIEND_MESSAGE.value}:{user_id}"
                                 try:
-                                    await self.context.send_message(session_str, chain)
+                                    await self.context.send_message(session_str, chain_friend)
                                     sent_count += 1
                                     self.logger.info(f"假期结束提醒已发送到用户 {user_id}")
-                                    sent_user_ids.add(uid)
-                                    await asyncio.sleep(self.send_interval_friend_seconds)
+                                    await asyncio.sleep(3)
                                 except Exception as e:
                                     self.logger.error(f"发送假期结束提醒到用户 {user_id} 失败: {e}")
                             
-                            # 发送到群组（跨平台去重）
+                            # 发送到群组
                             for group in group_list:
                                 group_id = group.get('group_id')
                                 if not group_id:
                                     continue
-                                gid = str(group_id)
-                                if gid in sent_group_ids:
-                                    continue
-                                session_str = f"{platform.meta.name}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
+                                session_str = f"{pname}:{MessageType.GROUP_MESSAGE.value}:{group_id}"
                                 try:
-                                    await self.context.send_message(session_str, chain)
+                                    await self.context.send_message(session_str, chain_group)
                                     sent_count += 1
                                     self.logger.info(f"假期结束提醒已发送到群组 {group_id}")
-                                    sent_group_ids.add(gid)
-                                    await asyncio.sleep(self.send_interval_group_seconds)
+                                    await asyncio.sleep(3)
                                 except Exception as e:
                                     self.logger.error(f"发送假期结束提醒到群组 {group_id} 失败: {e}")
                         except Exception as e:

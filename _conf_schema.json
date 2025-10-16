@@ -15,22 +15,6 @@
         "type": "string",
         "default": "holidays.json"
     },
-    "test_targets": {
-        "description": "测试命令的目标配置（可选）",
-        "type": "object",
-        "items": {
-            "group_ids": {
-                "description": "群组 ID 列表",
-                "type": "list",
-                "default": []
-            },
-            "user_ids": {
-                "description": "用户 ID 列表",
-                "type": "list",
-                "default": []
-            }
-        }
-    },
     "end_of_holiday_blessing": {
         "description": "假期结束提醒功能",
         "type": "object",

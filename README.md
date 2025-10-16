@@ -34,9 +34,7 @@
 -   `llm_provider_id`: 选择用于生成祝福的 LLM 提供商（从 AstrBot WebUI 已配置提供商中选择）。
 -   `holidays_file`: 节假日数据缓存文件名 (字符串, 默认: `holidays.json`)。
 > 首次安装默认快速模式：预计算未来 7 天，整年在后台自动补齐（无需配置）。
--   `test_targets`: 测试命令的目标配置 (对象，可选)。
-    -   `group_ids`: 群组 ID 列表 (列表)。
-    -   `user_ids`: 用户 ID 列表 (列表)。
+> 测试命令不再需要配置测试目标：它会基于当前会话推断（群聊触发→向该群发送，私聊触发→向该用户发送）。
 -   `start_of_holiday_blessing`: 假期首日祝福配置 (对象)。
     -   `send_time`: 每日发送时间 (字符串, 格式为 "HH:MM", 默认: `"00:05"`)。
 -   `end_of_holiday_blessing`: 假期结束提醒配置 (对象)。
